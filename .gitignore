@@ -132,3 +132,4 @@ dmypy.json
 .ruff_cache/
 .vscode/
 data.json
+groups.json

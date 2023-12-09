@@ -12,7 +12,9 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dotenv import load_dotenv
 
-from database import load_data, create_record, save_data, delete_object_by_id
+from database import load_data, create_record, save_data, delete_object_by_id, create_record_groups, save_data_groups, \
+    load_data_groups, delete_object_by_name_groups, get_object_by_name_groups, get_groups_name, \
+    load_posts_using_group_id
 
 load_dotenv()  # take environment variables from .env.
 
@@ -27,6 +29,13 @@ logging.basicConfig(
 logger.info("Starting bot")
 bot = Bot(token=TOKEN)
 dp = Dispatcher(bot, storage=MemoryStorage())
+
+
+def dynamic_kb(data):
+    keyboard = ReplyKeyboardMarkup(row_width=1, resize_keyboard=True)
+    for obj in data:
+        keyboard.add(KeyboardButton(obj))
+    return keyboard
 
 
 def convert_timezone_utc(timezone_str, date_time_str, date_time_format="%Y-%m-%d %H:%M:%S"):
@@ -48,10 +57,45 @@ def generate_timezones_keyboard():
     return keyboard
 
 
+def generate_keyboard(data):
+    rows = 2
+    buttons_per_row = len(data) // rows + (len(data) % rows > 0)
+    buttons = [KeyboardButton(button['name']) for button in data]
+    button_rows = [buttons[i:i + buttons_per_row] for i in range(0, len(buttons), buttons_per_row)]
+    keyboard = ReplyKeyboardMarkup(row_width=buttons_per_row, resize_keyboard=True)
+    for row in button_rows:
+        keyboard.add(*row)
+    return keyboard
+
+
+def action_keyboard():
+    keyboard = ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
+    keyboard.add(
+        KeyboardButton("Да"),
+        KeyboardButton("Нет")
+    )
+    return keyboard
+
+
 class Form(StatesGroup):
     get_data = State()
     get_timezone = State()
+    get_group = State()
     get_post = State()
+
+
+class FormChannel(StatesGroup):
+    get_id = State()
+    get_name = State()
+
+
+class ChannelCRUD(StatesGroup):
+    get_group_name = State()
+    get_action = State()
+
+
+class GetPosts(StatesGroup):
+    get_group = State()
 
 
 scheduler = AsyncIOScheduler()
@@ -71,6 +115,15 @@ async def publish_delayed_posts():
 async def on_startup(dp):
     scheduler.add_job(publish_delayed_posts, 'interval', minutes=1)
     scheduler.start()
+    await dp.bot.set_my_commands(
+        [
+            types.BotCommand("start", "Botni ishga tushurish"),
+            types.BotCommand("schedule", "Добавить задачу"),
+            types.BotCommand("myposts", "Мои посты"),
+            types.BotCommand("mygroups", "Мои группы"),
+            types.BotCommand("addgroup", "Добавить группу"),
+        ]
+    )
 
 
 @dp.message_handler(commands=['start'], state="*")
@@ -82,17 +135,79 @@ async def start(message: types.Message, state: FSMContext):
 
 @dp.message_handler(commands=['myposts'])
 async def schedule(message: types.Message):
-    posts = load_data()
+    post_having_groups = get_groups_name()
+    await message.answer("Выберите группу", reply_markup=dynamic_kb(post_having_groups))
+    await GetPosts.get_group.set()
+
+
+@dp.message_handler(state=GetPosts.get_group)
+async def get_groups(message: types.Message, state: FSMContext):
+    group_id = get_object_by_name_groups(message.text)
+    posts = load_posts_using_group_id(group_id)
     if not posts:
         await message.answer("Not found")
     for post in posts:
         msg = types.Message(**post['post'])
         timezone_str = post['utc']
         tz = convert_timezone_utc(timezone_str, post['scheduled'], "%d-%m-%Y %H:%M")
-        await msg.answer(f'Post ID: {post["id"]} \n'
-                         f'{tz.strftime("%Y-%m-%d %H:%M:%S")} with TZ: {timezone_str}'
-                         '👇👇👇👇👇')
+        await message.answer(f'Post ID: {post["id"]} \n'
+                             f'{tz.strftime("%Y-%m-%d %H:%M:%S")} with TZ: {timezone_str}'
+                             '👇👇👇👇👇')
         await msg.send_copy(message.from_user.id)
+    await message.answer("Они точно отправятся. Отправленные посты удалятся со списка",
+                         reply_markup=types.ReplyKeyboardRemove())
+    await state.finish()
+
+
+@dp.message_handler(commands=['mygroups', 'mychannels'])
+async def schedule_groups(message: types.Message):
+    groups_list = load_data_groups()
+    if not groups_list:
+        await message.answer("Not found")
+        return
+    await message.answer("Выберите группу из списка", reply_markup=generate_keyboard(groups_list))
+    await ChannelCRUD.get_group_name.set()
+
+
+@dp.message_handler(commands=['addgroup', "addchannel"])
+async def schedule(message: types.Message):
+    await message.answer(
+        "Отправьте айди группы или канала")
+    await FormChannel.get_id.set()
+
+
+@dp.message_handler(state=FormChannel.get_id)
+async def process_get_id(msg: types.Message, state: FSMContext):
+    await state.update_data(id=msg.text)
+    await msg.answer("Название группы/канала")
+    await FormChannel.get_name.set()
+
+
+@dp.message_handler(state=ChannelCRUD.get_group_name)
+async def process_group_get_name(msg: types.Message, state: FSMContext):
+    await state.update_data(name=msg.text)
+    await msg.answer("Вы хотите удалить группу/канал?", reply_markup=action_keyboard())
+    await ChannelCRUD.get_action.set()
+
+
+@dp.message_handler(state=ChannelCRUD.get_action)
+async def process_group_get_action(msg: types.Message, state: FSMContext):
+    if msg.text == "Да":
+        data = await state.get_data()
+        delete_object_by_name_groups(data['name'])
+        await msg.answer("Успешно удалено", reply_markup=types.ReplyKeyboardRemove())
+    else:
+        await msg.answer("Отменено", reply_markup=types.ReplyKeyboardRemove())
+    await state.finish()
+
+
+@dp.message_handler(state=FormChannel.get_name)
+async def process_get_name(msg: types.Message, state: FSMContext):
+    data = await state.get_data()
+    saving_data = create_record_groups(msg.text, data['id'])
+    save_data_groups(saving_data)
+    await msg.answer("Успешно добавился")
+    await state.finish()
 
 
 @dp.message_handler(commands=['schedule'])
@@ -119,21 +234,30 @@ async def process_schedule(msg: types.Message, state: FSMContext):
 @dp.message_handler(lambda message: message.text.startswith('UTC'), state=Form.get_timezone)
 async def process_timezone(msg: types.Message, state: FSMContext):
     await state.update_data(utc=msg.text)
+    groups_list = load_data_groups()
+    await msg.answer("Выбери группу", reply_markup=generate_keyboard(groups_list))
+    await Form.get_group.set()
+
+
+@dp.message_handler(state=Form.get_group)
+async def process_schedule_get_group(msg: types.Message, state: FSMContext):
+    await state.update_data(group_name=msg.text)
     await msg.answer("Отправь мне пост одним сообщением", reply_markup=types.ReplyKeyboardRemove())
     await Form.get_post.set()
 
 
-@dp.message_handler(state=Form.get_post)
-async def get_postqweq(m: types.Message, state: FSMContext):
+@dp.message_handler(state=Form.get_post, content_types=types.ContentTypes.ANY)
+async def get_post_form(m: types.Message, state: FSMContext):
     data = await state.get_data()
-    saving_data = create_record(m.as_json(), data['date'], utc=data['utc'])
+    group_id = get_object_by_name_groups(data['group_name'])
+    saving_data = create_record(m.as_json(), data['date'], utc=data['utc'], group_id=group_id)
     save_data(saving_data)
     await m.answer("Отложенная публикация успешно добавлена!")
     await state.finish()
 
 
 @dp.message_handler(state="*")
-async def qweqwrq(msg: types.Message, state: FSMContext):
+async def echo(msg: types.Message, state: FSMContext):
     await msg.answer(
         "Я бот для отложенных публикаций. Используй команду /schedule, чтобы добавить отложенную публикацию.")
 
