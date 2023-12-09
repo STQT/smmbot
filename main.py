@@ -98,6 +98,10 @@ class GetPosts(StatesGroup):
     get_group = State()
 
 
+class GetChannelInfo(StatesGroup):
+    get_channel = State()
+
+
 scheduler = AsyncIOScheduler()
 
 
@@ -122,6 +126,8 @@ async def on_startup(dp):
             types.BotCommand("myposts", "Мои посты"),
             types.BotCommand("mygroups", "Мои группы"),
             types.BotCommand("addgroup", "Добавить группу"),
+            types.BotCommand("getgroupid", "Узнать ID группы (работает в группах)"),
+            types.BotCommand("getchannelid", "Узнать ID канала")
         ]
     )
 
@@ -167,6 +173,30 @@ async def schedule_groups(message: types.Message):
         return
     await message.answer("Выберите группу из списка", reply_markup=generate_keyboard(groups_list))
     await ChannelCRUD.get_group_name.set()
+
+
+@dp.message_handler(commands=['getgroupid'])
+async def schedule_groups(message: types.Message):
+    if message.chat.type == "group":
+        await message.answer(f"ID группы: `{message.chat.id}`", parse_mode="MarkdownV2")
+    else:
+        await message.answer("Добавь меня в группу и введи эту команду чтобы узнать ID группы")
+
+
+@dp.message_handler(commands=['getchannelid'])
+async def schedule_groups(message: types.Message):
+    await message.answer("Отправь мне пост с нужного канала чтобы узнать ID канала")
+    await GetChannelInfo.get_channel.set()
+
+
+@dp.message_handler(content_types=types.ContentTypes.ANY, state=GetChannelInfo.get_channel)
+async def schedule_groups(message: types.Message, state: FSMContext):
+    logging.info(message)
+    if message.is_forward():
+        await message.answer(f"ID Канала: `{message.forward_from_chat.id}`", parse_mode="MarkdownV2")
+        await state.finish()
+    else:
+        await message.answer("Пожалуйста, отправь мне пересланное сообщение")
 
 
 @dp.message_handler(commands=['addgroup', "addchannel"])
