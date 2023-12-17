@@ -112,7 +112,7 @@ async def publish_delayed_posts():
         tz = datetime.strptime(post['scheduled'], "%d-%m-%Y %H:%M")
         if abs((tz - current_time).total_seconds()) < 100:
             msg = types.Message(**post['post'])
-            await msg.send_copy(GROUP_ID)
+            await msg.send_copy(post['group_id'])
             delete_object_by_id(post['id'])
 
 
